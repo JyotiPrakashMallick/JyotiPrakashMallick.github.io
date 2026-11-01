@@ -68,7 +68,7 @@
       --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", "Segoe UI", Helvetica, Arial, sans-serif;
       --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { scroll-behavior: smooth; font-size: 16px; }
     body {
       font-family: var(--sans);
@@ -109,7 +109,7 @@
 
     /* Hero */
     .hero { position: relative; padding: 110px 0 80px; overflow: hidden; }
-    .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.35; pointer-events: none; }
+    .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.32; pointer-events: none; }
     .hero .wrap { position: relative; }
     .tag {
       display: inline-flex; align-items: center; gap: 8px;
@@ -170,11 +170,25 @@
     .chip { font-size: 0.8rem; font-family: var(--mono); padding: 5px 10px; border-radius: 6px; background: var(--bg-2); border: 1px solid var(--line); color: var(--text); }
 
     /* Timeline */
-    .timeline { position: relative; padding-left: 32px; }
-    .timeline::before { content: ""; position: absolute; left: 7px; top: 6px; bottom: 6px; width: 2px; background: linear-gradient(var(--accent), var(--accent-2), transparent); }
+    .timeline { --rail: 9px; position: relative; padding-left: 36px; }
+    .timeline::before { content: ""; position: absolute; left: var(--rail); top: 6px; bottom: 6px; width: 2px; transform: translateX(-50%); background: linear-gradient(var(--accent), var(--accent-2), transparent); }
     .job { position: relative; margin-bottom: 26px; background: var(--card); box-shadow: var(--shadow); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px 26px; }
-    .job::before { content: ""; position: absolute; left: -31px; top: 30px; width: 14px; height: 14px; border-radius: 50%; background: var(--bg); border: 3px solid var(--accent); }
-    .job.current::before { background: var(--accent); box-shadow: 0 0 14px var(--accent); }
+    /* centre the dot on the rail: rail offset minus card padding-left and border */
+    /* Network-style nodes, centred on the rail (rail offset minus card padding-left and border) */
+    .timeline .job::before {
+      content: ""; position: absolute; left: calc(var(--rail) - 36px - 1px); top: 39px;
+      transform: translate(-50%, -50%); border-radius: 50%; z-index: 1;
+      width: 20px; height: 20px; background: var(--accent);
+      box-shadow: 0 0 0 4px var(--bg);
+    }
+    /* alternate: hollow ring node */
+    .timeline .job:nth-child(odd)::before { background: var(--bg); border: 4px solid var(--accent); }
+    /* current role: hub node — dark outer ring, accent body, white core */
+    .timeline .job.current::before {
+      width: 30px; height: 30px; border: 5px solid color-mix(in srgb, var(--text) 78%, var(--bg));
+      background: radial-gradient(circle, #fff 0 26%, var(--accent) 30%);
+      box-shadow: 0 0 0 4px var(--bg), 0 0 18px color-mix(in srgb, var(--accent) 55%, transparent);
+    }
     .job-head { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 20px; margin-bottom: 4px; }
     .job h3 { font-size: 1.08rem; font-weight: 600; }
     .job .when { font-family: var(--mono); font-size: 0.82rem; color: var(--accent); white-space: nowrap; }
@@ -555,31 +569,112 @@
     }, { rootMargin: "-50% 0px -50% 0px" });
     document.querySelectorAll("section[id]").forEach(s => spy.observe(s));
 
-    // Hero background: animated latency trace
+    // Hero background: slow-scrolling APM-style dashboard —
+    // p95 latency vs. SLA, throughput area, and occasional regressions that get tuned back down.
     const cv = document.getElementById("pulse"), ctx = cv.getContext("2d");
     const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let w, h, pts = [];
+    const STEP = 26, SPEED = 14, SLA = 250, MAX_LAT = 400, MAX_RPS = 1800; // css px, css px/s, ms, ms, rps
+    let w, h, dpr, data = [], offset = 0, tick = 0, pal = {}, running = true, last = 0;
+    let lat = 120, rps = 1100, incident = 0;
+
+    function sample() {
+      if (incident > 0) incident--;
+      else if (Math.random() < 0.035) incident = 12;
+      const extra = incident > 0 ? 210 * Math.pow(incident / 12, 1.6) : 0; // spike, then recovery as it's tuned
+      lat += (115 + extra - lat) * 0.35 + (Math.random() - 0.5) * 12;
+      rps += (1150 - extra * 2.2 - rps) * 0.3 + (Math.random() - 0.5) * 70;
+      return { lat: Math.max(40, lat), rps: Math.max(200, rps), id: tick++ };
+    }
+    function palette() {
+      const css = getComputedStyle(document.documentElement);
+      pal = {
+        theme: document.documentElement.dataset.theme,
+        a: css.getPropertyValue("--accent").trim(), b: css.getPropertyValue("--accent-2").trim(),
+        line: css.getPropertyValue("--line").trim(), muted: css.getPropertyValue("--muted").trim(),
+        bg: css.getPropertyValue("--bg").trim(), bad: "#f87171", mono: css.getPropertyValue("--mono").trim(),
+      };
+    }
     function size() {
-      w = cv.width = cv.offsetWidth * devicePixelRatio;
-      h = cv.height = cv.offsetHeight * devicePixelRatio;
-      pts = Array.from({ length: Math.ceil(w / (14 * devicePixelRatio)) + 2 }, () => Math.random());
+      dpr = devicePixelRatio || 1;
+      w = cv.width = cv.offsetWidth * dpr;
+      h = cv.height = cv.offsetHeight * dpr;
+      const need = Math.ceil(cv.offsetWidth / STEP) + 3;
+      while (data.length < need) data.push(sample());
+      data = data.slice(-need);
     }
     function draw() {
+      if (pal.theme !== document.documentElement.dataset.theme) palette();
+      const top = h * 0.14, bot = h * 0.96, ph = bot - top, step = STEP * dpr, off = offset * dpr;
+      const x = i => i * step - off;
+      const yL = v => bot - (v / MAX_LAT) * ph;
+      const yR = v => bot - (v / MAX_RPS) * ph * 0.55;
       ctx.clearRect(0, 0, w, h);
-      const step = w / (pts.length - 2);
-      const css = getComputedStyle(document.documentElement);
-      [[css.getPropertyValue("--accent"), 0.62, 0.18, 1], [css.getPropertyValue("--accent-2"), 0.8, 0.1, 0.6]].forEach(([color, base, amp, k]) => {
-        ctx.beginPath();
-        pts.forEach((p, i) => {
-          const y = h * (base - amp * p * k);
-          i ? ctx.lineTo(i * step, y) : ctx.moveTo(0, y);
-        });
-        ctx.strokeStyle = color; ctx.lineWidth = 1.5 * devicePixelRatio; ctx.stroke();
+      ctx.font = `${11 * dpr}px ${pal.mono}`;
+
+      // grid: fixed horizontals, verticals scroll with the data
+      ctx.strokeStyle = pal.line; ctx.lineWidth = dpr;
+      ctx.beginPath();
+      for (let g = 0; g <= 4; g++) { const y = top + (ph * g) / 4; ctx.moveTo(0, y); ctx.lineTo(w, y); }
+      data.forEach((d, i) => { if (d.id % 5 === 0) { ctx.moveTo(x(i), top); ctx.lineTo(x(i), bot); } });
+      ctx.stroke();
+
+      // throughput area
+      const grad = ctx.createLinearGradient(0, yR(MAX_RPS), 0, bot);
+      grad.addColorStop(0, pal.b + "55"); grad.addColorStop(1, pal.b + "00");
+      ctx.beginPath(); ctx.moveTo(x(0), bot);
+      data.forEach((d, i) => ctx.lineTo(x(i), yR(d.rps)));
+      ctx.lineTo(x(data.length - 1), bot); ctx.closePath();
+      ctx.fillStyle = grad; ctx.fill();
+      ctx.beginPath(); data.forEach((d, i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, x(i), yR(d.rps)));
+      ctx.strokeStyle = pal.b; ctx.lineWidth = 1.2 * dpr; ctx.stroke();
+
+      // SLA threshold
+      ctx.setLineDash([6 * dpr, 6 * dpr]); ctx.strokeStyle = pal.bad; ctx.lineWidth = dpr;
+      ctx.beginPath(); ctx.moveTo(0, yL(SLA)); ctx.lineTo(w, yL(SLA)); ctx.stroke(); ctx.setLineDash([]);
+
+      // p95 latency (smoothed curve)
+      ctx.beginPath(); ctx.moveTo(x(0), yL(data[0].lat));
+      for (let i = 1; i < data.length; i++) {
+        const mx = (x(i - 1) + x(i)) / 2, my = (yL(data[i - 1].lat) + yL(data[i].lat)) / 2;
+        ctx.quadraticCurveTo(x(i - 1), yL(data[i - 1].lat), mx, my);
+      }
+      ctx.strokeStyle = pal.a; ctx.lineWidth = 2.2 * dpr; ctx.lineJoin = "round"; ctx.stroke();
+
+      // flag SLA breaches
+      data.forEach((d, i) => {
+        if (d.lat < SLA) return;
+        ctx.beginPath(); ctx.arc(x(i), yL(d.lat), 3.5 * dpr, 0, Math.PI * 2);
+        ctx.fillStyle = pal.bg; ctx.fill(); ctx.strokeStyle = pal.bad; ctx.lineWidth = 1.5 * dpr; ctx.stroke();
       });
+
+      // live readout at the leading edge
+      const li = data.length - 3, lx = x(li), ly = yL(data[li].lat);
+      ctx.beginPath(); ctx.arc(lx, ly, 4.5 * dpr, 0, Math.PI * 2); ctx.fillStyle = pal.a; ctx.fill();
+      ctx.beginPath(); ctx.arc(lx, ly, 9 * dpr, 0, Math.PI * 2); ctx.strokeStyle = pal.a + "66"; ctx.lineWidth = 2 * dpr; ctx.stroke();
+      ctx.textAlign = "right"; ctx.fillStyle = pal.a;
+      ctx.fillText(`p95 ${Math.round(data[li].lat)} ms`, lx - 16 * dpr, ly - 12 * dpr);
+      ctx.fillStyle = pal.b;
+      ctx.fillText(`${Math.round(data[li].rps).toLocaleString()} rps`, lx - 16 * dpr, yR(data[li].rps) - 10 * dpr);
+      ctx.fillStyle = pal.bad;
+      ctx.fillText(`SLA ${SLA} ms`, w - 16 * dpr, yL(SLA) - 8 * dpr);
+    }
+    function frame(t) {
+      if (!running) return;
+      const dt = last ? Math.min((t - last) / 1000, 0.1) : 0; last = t;
+      offset += SPEED * dt;
+      while (offset >= STEP) { offset -= STEP; data.shift(); data.push(sample()); }
+      draw();
+      requestAnimationFrame(frame);
     }
     size(); draw();
     addEventListener("resize", () => { size(); draw(); });
-    if (!reduce) setInterval(() => { pts.shift(); pts.push(Math.random() ** 2); draw(); }, 120);
+    if (!reduce) {
+      // only animate while the hero is on screen
+      new IntersectionObserver(([e]) => {
+        running = e.isIntersecting; last = 0;
+        if (running) requestAnimationFrame(frame);
+      }).observe(cv);
+    }
   </script>
 </body>
 </html>
